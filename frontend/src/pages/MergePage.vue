@@ -32,6 +32,8 @@ const snapLog = ref<string[]>([])
 
 const offsets = reactive<Record<string, number>>({})
 const snapped = reactive<Record<string, boolean>>({})
+/** 最近一次落库的拼合偏移：用于识别手记合并等外部重算，避免与拖动中的值打架 */
+const lastMergeOffset = reactive<Record<string, number>>({})
 
 const caveSegments = computed(() =>
   segmentState.segments.filter((segment) => !selectedCaveId.value || segment.caveId === selectedCaveId.value)
@@ -71,7 +73,15 @@ watch(
   mergeSketches,
   (list) => {
     list.forEach((sketch) => {
-      if (offsets[sketch.id] === undefined) offsets[sketch.id] = 0
+      const persisted = sketch.mergeOffset ?? 0
+      if (offsets[sketch.id] === undefined) {
+        offsets[sketch.id] = persisted
+        lastMergeOffset[sketch.id] = persisted
+      } else if (lastMergeOffset[sketch.id] !== persisted) {
+        // 手记合并重算过拼合偏移，同步到当前视图
+        offsets[sketch.id] = persisted
+        lastMergeOffset[sketch.id] = persisted
+      }
       if (snapped[sketch.id] === undefined) snapped[sketch.id] = false
     })
   },
@@ -86,8 +96,8 @@ const caveStations = computed(() =>
 )
 const { result: closureResult } = useClosureCheck(caveStations)
 
-/** 按桩号锚点自动吸附：以最小锚点桩号为原点，按桩号差换算横向偏移 */
-function autoAlign(): void {
+/** 按桩号锚点自动吸附：以最小锚点桩号为原点，按桩号差换算横向偏移，并重算落库 */
+async function autoAlign(): Promise<void> {
   const list = mergeSketches.value
   if (list.length === 0) {
     ElMessage.warning('当前洞穴暂无可拼合草图')
@@ -95,15 +105,21 @@ function autoAlign(): void {
   }
   const base = Math.min(...list.map((sketch) => stakeToNumber(sketch.anchorStake)))
   const logs: string[] = []
+  const updated: Sketch[] = []
   list.forEach((sketch) => {
     const stake = stakeToNumber(sketch.anchorStake)
     const target = Math.round((stake - base) * PX_PER_METER)
     offsets[sketch.id] = target
     snapped[sketch.id] = true
+    updated.push({ ...sketch, mergeOffset: target })
     logs.push(`${sketch.code} 锚点 ${sketch.anchorStake} → 偏移 ${target}px`)
   })
+  await Promise.all(updated.map((sketch) => sketchStore.getState().save(sketch)))
+  updated.forEach((sketch) => {
+    lastMergeOffset[sketch.id] = sketch.mergeOffset
+  })
   snapLog.value = logs
-  ElMessage.success(`已按桩号锚点吸附 ${list.length} 张图幅`)
+  ElMessage.success(`已按桩号锚点吸附 ${list.length} 张图幅，偏移已重算保存`)
 }
 
 function onMouseDown(sketch: Sketch, event: MouseEvent): void {
@@ -138,7 +154,17 @@ function onMouseMove(event: MouseEvent): void {
 }
 
 function onMouseUp(): void {
+  const id = draggingId.value
   draggingId.value = null
+  // 拖动结束后把拼合偏移落库，合并手记重算后也以持久化偏移为准
+  if (id) {
+    const sketch = mergeSketches.value.find((item) => item.id === id)
+    if (sketch) {
+      const offset = offsets[id] ?? 0
+      lastMergeOffset[id] = offset
+      void sketchStore.getState().save({ ...sketch, mergeOffset: offset })
+    }
+  }
 }
 
 /** 拼合顺序表（输出结果） */

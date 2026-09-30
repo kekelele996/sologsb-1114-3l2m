@@ -14,6 +14,8 @@ export interface Sketch {
   mergeOrder: number
   /** 桩号对齐锚点 */
   anchorStake: string
+  /** 图幅拼合横向偏移（单位：格/像素，合并手记后按锚点桩号重算） */
+  mergeOffset: number
   /** 图片数据说明 */
   imageNote: string
 }

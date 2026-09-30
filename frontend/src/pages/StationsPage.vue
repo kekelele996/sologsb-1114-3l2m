@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import type { Station } from '@/types'
+import type { Station, StationVersion } from '@/types'
 import BearingInput from '@/components/common/BearingInput.vue'
 import ClosureBadge from '@/components/common/ClosureBadge.vue'
 import SegmentTag from '@/components/common/SegmentTag.vue'
@@ -21,6 +21,10 @@ const selectedCaveId = ref<string>(caveState.caves[0]?.id ?? '')
 const selectedSegmentId = ref<string>('')
 const editingId = ref<string | null>(null)
 const lastSaved = ref<string>('')
+
+const versionsVisible = ref(false)
+const viewingStation = ref<Station | null>(null)
+const reviewer = ref('')
 
 const form = reactive({
   code: 'P1',
@@ -178,6 +182,30 @@ function editStation(station: Station): void {
   form.note = station.note
 }
 
+/** 某测点的全部读数版本（外业手记版 / 内业复核版），按时间倒序 */
+function versionsOf(stationId: string): StationVersion[] {
+  return stationState.versions
+    .filter((version) => version.stationId === stationId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+}
+
+function openVersions(station: Station): void {
+  viewingStation.value = station
+  const reviewed = versionsOf(station.id).find((version) => version.reviewedBy)
+  reviewer.value = reviewed?.reviewedBy ?? ''
+  versionsVisible.value = true
+}
+
+/** 复核某一版读数：复核人写入后该版成为正式成果 */
+async function reviewVersion(version: StationVersion): Promise<void> {
+  if (!reviewer.value.trim()) {
+    ElMessage.warning('请填写复核人')
+    return
+  }
+  await stationStore.getState().reviewVersion(version.id, reviewer.value)
+  ElMessage.success(`已由 ${reviewer.value.trim()} 复核，该版读数进入正式成果`)
+}
+
 async function removeStation(station: Station): Promise<void> {
   await ElMessageBox.confirm(`确认删除测点「${station.code}」？`, '删除确认', { type: 'warning' })
   await stationStore.getState().remove(station.id)
@@ -296,6 +324,12 @@ async function removeStation(station: Station): Promise<void> {
     <h3 class="section-title">本洞段读数（{{ segmentStations.length }} 站）</h3>
     <el-table :data="segmentStations" border stripe :row-class-name="rowClassName">
       <el-table-column prop="code" label="桩号" width="90" />
+      <el-table-column label="推算桩号" width="110">
+        <template #default="{ row }: { row: Station }">
+          <span v-if="row.stake" class="mono">{{ row.stake }}</span>
+          <span v-else class="muted">—</span>
+        </template>
+      </el-table-column>
       <el-table-column label="方位角" width="150">
         <template #default="{ row }: { row: Station }">{{ row.bearing }}° / {{ formatDms(row.bearing) }}</template>
       </el-table-column>
@@ -320,14 +354,79 @@ async function removeStation(station: Station): Promise<void> {
           <el-tag v-else type="success" size="small" effect="plain">正常</el-tag>
         </template>
       </el-table-column>
+      <el-table-column label="读数版本" width="110">
+        <template #default="{ row }: { row: Station }">
+          <el-tag
+            v-if="versionsOf(row.id).length > 1"
+            type="warning"
+            size="small"
+            effect="dark"
+            @click="openVersions(row)"
+          >
+            多版本 {{ versionsOf(row.id).length }}
+          </el-tag>
+          <span v-else class="muted">单版本</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="note" label="备注" min-width="140" show-overflow-tooltip />
-      <el-table-column label="操作" width="130" fixed="right">
+      <el-table-column label="操作" width="190" fixed="right">
         <template #default="{ row }: { row: Station }">
           <el-button link type="primary" size="small" @click="editStation(row)">编辑</el-button>
+          <el-button link type="warning" size="small" @click="openVersions(row)">版本</el-button>
           <el-button link type="danger" size="small" @click="removeStation(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
+
+    <el-dialog v-model="versionsVisible" title="测点读数版本" width="720px" top="6vh">
+      <template v-if="viewingStation">
+        <div class="version-head">
+          <b>{{ viewingStation.code }}</b>
+          <span class="muted">两版读数都留下，编目台按谁复核过决定哪版进入正式成果</span>
+        </div>
+        <div class="reviewer-row">
+          <span class="muted">复核人：</span>
+          <el-input v-model="reviewer" size="small" placeholder="内业复核人姓名" style="width: 180px" />
+          <span class="muted">在下方选择一版读数并填写复核人后，该版即成为正式成果</span>
+        </div>
+        <div v-for="version in versionsOf(viewingStation.id)" :key="version.id" class="version-card" :class="{ official: version.official }">
+          <div class="version-tags">
+            <el-tag :type="version.source === 'field' ? 'info' : 'success'" size="small" effect="plain">
+              {{ version.source === 'field' ? '外业手记' : '内业复核' }}
+            </el-tag>
+            <el-tag v-if="version.official" type="success" size="small" effect="dark">正式成果</el-tag>
+            <el-tag v-if="version.reviewedBy" type="warning" size="small" effect="plain">
+              已复核 · {{ version.reviewedBy }} · {{ version.reviewedAt?.replace('T', ' ').slice(0, 16) }}
+            </el-tag>
+            <el-tag v-else type="info" size="small" effect="plain">未复核</el-tag>
+          </div>
+          <el-descriptions :column="3" border size="small" class="version-desc">
+            <el-descriptions-item label="方位角">{{ version.bearing }}°</el-descriptions-item>
+            <el-descriptions-item label="倾角">{{ version.dip }}°</el-descriptions-item>
+            <el-descriptions-item label="斜距">{{ version.slopeDistance }} m</el-descriptions-item>
+            <el-descriptions-item label="水平距">{{ version.horizontalDistance }} m</el-descriptions-item>
+            <el-descriptions-item label="垂距">{{ version.verticalDistance }} m</el-descriptions-item>
+            <el-descriptions-item label="仪器号">{{ version.instrumentNo || '—' }}</el-descriptions-item>
+            <el-descriptions-item label="测量人">{{ version.surveyor || '—' }}</el-descriptions-item>
+            <el-descriptions-item label="日期">{{ version.date }}</el-descriptions-item>
+            <el-descriptions-item label="闭合点">{{ version.isClosurePoint ? '是' : '否' }}</el-descriptions-item>
+          </el-descriptions>
+          <div class="version-note muted">备注：{{ version.note || '—' }}</div>
+          <div class="version-actions">
+            <el-button
+              v-if="!version.reviewedBy"
+              size="small"
+              type="warning"
+              plain
+              @click="reviewVersion(version)"
+            >
+              复核并采用此版
+            </el-button>
+            <span v-else class="muted">该版已经复核，作为正式成果使用</span>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -358,5 +457,51 @@ async function removeStation(station: Station): Promise<void> {
 }
 :deep(.abnormal-row td) {
   color: #b03030;
+}
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.version-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.reviewer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+.version-card {
+  border: 1px solid #e2e9f0;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  background: #fafbfd;
+}
+.version-card.official {
+  border-color: #2f6f8f;
+  background: #f0f7fb;
+}
+.version-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.version-desc {
+  margin-bottom: 6px;
+}
+.version-note {
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.version-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
 }
 </style>

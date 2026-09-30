@@ -23,6 +23,8 @@ export interface Station {
   /** 是否闭合点 */
   isClosurePoint: boolean
   note: string
+  /** 测点桩号（合并时按累计水平距推算，如 K0+120），应落在所属洞段桩号区间内 */
+  stake?: string
 }
 
 export interface ClosureResult {

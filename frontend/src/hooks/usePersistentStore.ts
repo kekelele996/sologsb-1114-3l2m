@@ -1,23 +1,25 @@
 import { onUnmounted, reactive } from 'vue'
 import type { StoreApi } from 'zustand/vanilla'
 import Dexie, { type Table } from 'dexie'
-import type { Cave, Segment, Sketch, Station } from '@/types'
+import type { Cave, Notebook, Segment, Sketch, Station, StationVersion } from '@/types'
 import { computeHorizontal, computeVertical } from '@/utils/survey'
 
 /** IndexedDB 数据结构版本号（升级迁移时使用） */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 export interface MetaRow {
   key: string
   value: number
 }
 
-/** Dexie 封装：洞穴 / 洞段 / 测点 / 草图 四张表 + 元数据表 */
+/** Dexie 封装：洞穴 / 洞段 / 测点 / 草图 / 外业手记 / 测点版本 六张表 + 元数据表 */
 class CaveSurveyDb extends Dexie {
   caves!: Table<Cave, string>
   segments!: Table<Segment, string>
   stations!: Table<Station, string>
   sketches!: Table<Sketch, string>
+  notebooks!: Table<Notebook, string>
+  stationVersions!: Table<StationVersion, string>
   meta!: Table<MetaRow, string>
 
   constructor() {
@@ -30,7 +32,7 @@ class CaveSurveyDb extends Dexie {
       meta: 'key'
     })
     // v2：旧版测点记录缺少水平距/垂距，迁移时由斜距 + 倾角补齐
-    this.version(SCHEMA_VERSION)
+    this.version(2)
       .stores({
         caves: 'id, name, region, archived',
         segments: 'id, caveId, code, type',
@@ -48,6 +50,27 @@ class CaveSurveyDb extends Dexie {
             }
             if (!Number.isFinite(station.verticalDistance)) {
               station.verticalDistance = computeVertical(station.dip, station.slopeDistance)
+            }
+          })
+      })
+    // v3：外业手记整本合并 + 测点读数双版本留存；草图增加拼合偏移字段
+    this.version(SCHEMA_VERSION)
+      .stores({
+        caves: 'id, name, region, archived',
+        segments: 'id, caveId, code, type',
+        stations: 'id, segmentId, code, date',
+        sketches: 'id, segmentId, code, mergeOrder',
+        notebooks: 'id, caveId, code, status, mergeBatch',
+        stationVersions: 'id, stationId, source, batchId, reviewedBy',
+        meta: 'key'
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table<Sketch, string>('sketches')
+          .toCollection()
+          .modify((sketch) => {
+            if (sketch.mergeOffset === undefined || sketch.mergeOffset === null) {
+              sketch.mergeOffset = 0
             }
           })
       })
@@ -197,6 +220,7 @@ export async function seedDemoData(): Promise<void> {
       author: '陆昀',
       mergeOrder: 1,
       anchorStake: 'K0+000',
+      mergeOffset: 0,
       imageNote: '平面展开草图，坐标纸 48 格，含左壁支护标注'
     },
     {
@@ -208,6 +232,7 @@ export async function seedDemoData(): Promise<void> {
       author: '覃羽',
       mergeOrder: 2,
       anchorStake: 'K0+120',
+      mergeOffset: 0,
       imageNote: '竖井剖面草图，标注三处锚点'
     }
   ])
