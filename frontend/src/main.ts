@@ -10,6 +10,7 @@ import { caveStore } from '@/stores/caveStore'
 import { segmentStore } from '@/stores/segmentStore'
 import { stationStore } from '@/stores/stationStore'
 import { sketchStore } from '@/stores/sketchStore'
+import { notebookStore } from '@/stores/notebookStore'
 import '@/styles/main.css'
 
 async function bootstrap(): Promise<void> {
@@ -19,6 +20,7 @@ async function bootstrap(): Promise<void> {
   await segmentStore.getState().hydrate()
   await stationStore.getState().hydrate()
   await sketchStore.getState().hydrate()
+  await notebookStore.getState().hydrate()
 }
 
 const app = createApp(App)

@@ -10,6 +10,7 @@ import { segmentStore } from '@/stores/segmentStore'
 import { stationStore } from '@/stores/stationStore'
 import { sketchStore } from '@/stores/sketchStore'
 import { toRadians } from '@/utils/survey'
+import { officialStations } from '@/utils/stationVersion'
 import { uid } from '@/utils/id'
 
 const caveState = useStore(caveStore)
@@ -34,6 +35,8 @@ const form = reactive({
   author: '',
   mergeOrder: 1,
   anchorStake: 'K0+000',
+  mergeOffset: 0,
+  snapped: false,
   imageNote: ''
 })
 
@@ -65,9 +68,11 @@ watch(
 )
 
 const segmentStations = computed<Station[]>(() =>
-  stationState.stations
-    .filter((station) => station.segmentId === selectedSegmentId.value)
-    .sort((a, b) => Number((a.code.match(/\d+/) ?? ['0'])[0]) - Number((b.code.match(/\d+/) ?? ['0'])[0]))
+  officialStations(
+    stationState.stations
+      .filter((station) => station.segmentId === selectedSegmentId.value)
+      .sort((a, b) => Number((a.code.match(/\d+/) ?? ['0'])[0]) - Number((b.code.match(/\d+/) ?? ['0'])[0]))
+  )
 )
 
 /** 测点折线：以起点为原点，按方位角/水平距投影到平面坐标 */
@@ -155,6 +160,8 @@ async function submit(): Promise<void> {
     author: form.author.trim(),
     mergeOrder: Number(form.mergeOrder) || 1,
     anchorStake: form.anchorStake.trim(),
+    mergeOffset: existing?.mergeOffset ?? 0,
+    snapped: existing?.snapped ?? false,
     imageNote: form.imageNote.trim()
   }
   await sketchStore.getState().save(sketch)

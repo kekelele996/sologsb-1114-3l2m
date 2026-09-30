@@ -1,23 +1,24 @@
 import { onUnmounted, reactive } from 'vue'
 import type { StoreApi } from 'zustand/vanilla'
 import Dexie, { type Table } from 'dexie'
-import type { Cave, Segment, Sketch, Station } from '@/types'
+import type { Cave, NotebookBatch, Segment, Sketch, Station } from '@/types'
 import { computeHorizontal, computeVertical } from '@/utils/survey'
 
 /** IndexedDB 数据结构版本号（升级迁移时使用） */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 export interface MetaRow {
   key: string
   value: number
 }
 
-/** Dexie 封装：洞穴 / 洞段 / 测点 / 草图 四张表 + 元数据表 */
+/** Dexie 封装：洞穴 / 洞段 / 测点 / 草图 / 外业手记五张表 + 元数据表 */
 class CaveSurveyDb extends Dexie {
   caves!: Table<Cave, string>
   segments!: Table<Segment, string>
   stations!: Table<Station, string>
   sketches!: Table<Sketch, string>
+  notebooks!: Table<NotebookBatch, string>
   meta!: Table<MetaRow, string>
 
   constructor() {
@@ -30,7 +31,7 @@ class CaveSurveyDb extends Dexie {
       meta: 'key'
     })
     // v2：旧版测点记录缺少水平距/垂距，迁移时由斜距 + 倾角补齐
-    this.version(SCHEMA_VERSION)
+    this.version(2)
       .stores({
         caves: 'id, name, region, archived',
         segments: 'id, caveId, code, type',
@@ -49,6 +50,37 @@ class CaveSurveyDb extends Dexie {
             if (!Number.isFinite(station.verticalDistance)) {
               station.verticalDistance = computeVertical(station.dip, station.slopeDistance)
             }
+          })
+      })
+    // v3：外业手记合并；测点保留来源/复核版本，草图持久化锚点重算后的拼合偏移
+    this.version(SCHEMA_VERSION)
+      .stores({
+        caves: 'id, name, region, archived',
+        segments: 'id, caveId, code, type',
+        stations: 'id, segmentId, code, date, source, reviewState, notebookId',
+        sketches: 'id, segmentId, code, mergeOrder',
+        notebooks: 'notebookId, status, mergedAt',
+        meta: 'key'
+      })
+      .upgrade(async (tx) => {
+        const segments = await tx.table<Segment, string>('segments').toArray()
+        const segmentMap = new Map(segments.map((segment) => [segment.id, segment]))
+        await tx
+          .table<Station, string>('stations')
+          .toCollection()
+          .modify((station) => {
+            const segment = segmentMap.get(station.segmentId)
+            station.stake ??= segment?.startStake ?? 'K0+000'
+            station.source ??= 'office'
+            station.reviewState ??= 'reviewed'
+            station.reviewedAt ??= new Date().toISOString()
+          })
+        await tx
+          .table<Sketch, string>('sketches')
+          .toCollection()
+          .modify((sketch) => {
+            sketch.mergeOffset ??= 0
+            sketch.snapped ??= false
           })
       })
   }
@@ -159,6 +191,7 @@ export async function seedDemoData(): Promise<void> {
       id: 'st_demo_001',
       segmentId: segmentA,
       code: 'P1',
+      stake: 'K0+012',
       bearing: 118.5,
       dip: -2.5,
       slopeDistance: 12.4,
@@ -168,12 +201,16 @@ export async function seedDemoData(): Promise<void> {
       surveyor: '陆昀',
       date: today,
       isClosurePoint: false,
+      source: 'office',
+      reviewState: 'reviewed',
+      reviewedAt: new Date().toISOString(),
       note: '入口段，左壁有崩塌堆积'
     },
     {
       id: 'st_demo_002',
       segmentId: segmentA,
       code: 'P2',
+      stake: 'K0+028',
       bearing: 121.2,
       dip: -1.8,
       slopeDistance: 15.8,
@@ -183,6 +220,9 @@ export async function seedDemoData(): Promise<void> {
       surveyor: '陆昀',
       date: today,
       isClosurePoint: true,
+      source: 'office',
+      reviewState: 'reviewed',
+      reviewedAt: new Date().toISOString(),
       note: '本段末站，已与 C-02 起点核对'
     }
   ])
@@ -197,6 +237,8 @@ export async function seedDemoData(): Promise<void> {
       author: '陆昀',
       mergeOrder: 1,
       anchorStake: 'K0+000',
+      mergeOffset: 0,
+      snapped: true,
       imageNote: '平面展开草图，坐标纸 48 格，含左壁支护标注'
     },
     {
@@ -208,6 +250,8 @@ export async function seedDemoData(): Promise<void> {
       author: '覃羽',
       mergeOrder: 2,
       anchorStake: 'K0+120',
+      mergeOffset: 192,
+      snapped: true,
       imageNote: '竖井剖面草图，标注三处锚点'
     }
   ])

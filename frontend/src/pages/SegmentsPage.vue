@@ -9,6 +9,7 @@ import { caveStore } from '@/stores/caveStore'
 import { segmentStore } from '@/stores/segmentStore'
 import { stationStore } from '@/stores/stationStore'
 import { stakeRangeOverlap, stakeToNumber } from '@/utils/survey'
+import { officialStations } from '@/utils/stationVersion'
 import { uid } from '@/utils/id'
 
 const caveState = useStore(caveStore)
@@ -60,7 +61,7 @@ function caveName(caveId: string): string {
 }
 
 function stationCount(segmentId: string): number {
-  return stationState.stations.filter((station) => station.segmentId === segmentId).length
+  return officialStations(stationState.stations.filter((station) => station.segmentId === segmentId)).length
 }
 
 function resetForm(): void {

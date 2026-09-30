@@ -36,7 +36,7 @@ FRONTEND_PORT=21814
 | 状态管理 | Zustand（`zustand/vanilla` createStore + Vue 响应式桥接） |
 | 路由 | Vue Router 4（History 模式，nginx `try_files` 回落） |
 | 构建 | Vite 6 |
-| 本地存储 | IndexedDB（Dexie 封装，含 `schemaVersion` 与升级迁移） |
+| 本地存储 | IndexedDB（Dexie 封装，含 `schemaVersion` 与升级迁移，当前 v3） |
 | 部署 | 多阶段 Dockerfile：`node:20-alpine` 构建 → `nginx:alpine` 托管 |
 
 ## 三、本地开发
@@ -61,8 +61,8 @@ sologsb-1114/
 │   ├── nginx.conf              # try_files 前端路由回落 + gzip
 │   ├── public/favicon.svg
 │   └── src/
-│       ├── types/              # cave.ts / segment.ts / station.ts / sketch.ts / index.ts
-│       ├── stores/             # caveStore / segmentStore / stationStore / sketchStore（Zustand）
+│       ├── types/              # cave.ts / segment.ts / station.ts / sketch.ts / notebook.ts / index.ts
+│       ├── stores/             # caveStore / segmentStore / stationStore / sketchStore / notebookStore（Zustand）
 │       ├── components/common/  # SegmentTag / BearingInput / ClosureBadge / GridCanvas
 │       ├── hooks/              # usePersistentStore / useClosureCheck
 │       ├── pages/              # CavesPage / SegmentsPage / StationsPage / SketchPage / MergePage
@@ -77,10 +77,14 @@ sologsb-1114/
 | Cave 洞穴 | 归属根节点：洞名、行政区、经纬度、海拔、发育层位、已知总长、负责人等 | `caves` |
 | Segment 洞段 | 起止桩号、类型（竖井/廊道/厅堂/裂隙/水道）、平均宽高、是否闭合 | `segments` |
 | Station 测点 | 方位角、倾角、斜距 → 自动推算水平距/垂距，累计闭合差 | `stations` |
-| Sketch 草图 | 格数、比例、绘制人、拼合顺序号、桩号对齐锚点 | `sketches` |
+| Sketch 草图 | 格数、比例、绘制人、拼合顺序号、桩号对齐锚点、持久化拼合偏移 | `sketches` |
+| NotebookBatch 外业手记 | 整本手记编号、原始 JSON、成功/失败状态、冲突/新落统计，失败可退回重试 | `notebooks` |
 
 - 数据库名 `gbcavesurvey`，`meta` 表保存 `schemaVersion`；
 - `version(2)` 升级迁移会把旧版测点记录由「斜距 + 倾角」补齐 `horizontalDistance` / `verticalDistance`；
+- `version(3)` 为测点增加来源（外业/内业）、复核状态与里程桩号，为草图增加拼合偏移，并新增 `notebooks` 表；
+- 同一逻辑测点（洞段 + 桩号）可保留多版读数，正式成果优先采用「已复核内业版 → 已复核外业版 → 未复核内业版 → 未复核外业版」；
+- 外业手记按稳定版本 ID 幂等合并，失败事务回滚，失败批次保留原文，重试同一本不会产生重复测点；
 - 数据仅存于浏览器本地，容器无状态、不挂载命名卷，清除浏览器数据即清空。
 
 ## 六、主要页面
@@ -89,12 +93,15 @@ sologsb-1114/
 | --- | --- |
 | `/caves` | 洞穴清单：卡片展示实测/已知总长、洞段数、最近测量日期，支持新建、编辑、归档、删除（删除前校验下级洞段数） |
 | `/segments` | 洞段编目表：按桩号区间/类型/洞穴筛选，批量调整洞段类型与闭合标记，自动累计总长 |
-| `/stations` | 测点读数录入：方位角/倾角专用输入（度分秒 ⇄ 十进制度），自动推算水平距垂距，实时闭合差徽标，异常读数整行高亮，支持连续录入下一站 |
-| `/sketch` | 草图工作台：坐标纸网格上绘制测点折线、标注桩号与倾角箭头，支持草图基准方位旋转与草图记录管理 |
-| `/merge` | 图幅拼合视图：拖动图幅按相邻边缘吸附、按桩号锚点一键对齐，输出可调整的拼合顺序表并支持 CSV 导出 |
+| `/stations` | 测点读数录入：度分秒输入，自动推算水平距/垂距；同点外业/内业版本并列保留，可复核，正式成果自动选版 |
+| `/notebooks` | 外业手记合并：导入/粘贴整本 JSON，先校验洞段与桩号区间，预览新增和冲突测点；失败批次可退回重试且重试幂等 |
+| `/sketch` | 草图工作台：仅使用正式成果测点绘制折线、标注桩号与倾角箭头，支持基准方位旋转和草图记录管理 |
+| `/merge` | 图幅拼合视图：新落测点后重算草图锚点，拖动图幅按边缘吸附、按桩号锚点一键对齐并持久化偏移，输出拼合顺序表和 CSV |
 
 ## 七、计算约定
 
 - 水平距 = 斜距 × cos(倾角)，垂距 = 斜距 × sin(倾角)；
 - 闭合差 f = √(ΣΔE² + ΣΔN²)，默认阈值 0.25 m，超限时徽标变红并可展开计算过程；
-- 方位角范围 0°–360°，倾角范围 -90°–90°，越界读数会被标记为异常。
+- 方位角范围 0°–360°，倾角范围 -90°–90°，越界读数会被标记为异常；
+- 新落测点的里程桩号必须位于所属洞段 `startStake`–`endStake` 区间；
+- 受影响洞穴的草图锚点优先对齐本次新落测点，并按 `桩号差 × 1.6 px/m` 重算图幅偏移。

@@ -8,6 +8,7 @@ import { caveStore } from '@/stores/caveStore'
 import { segmentStore } from '@/stores/segmentStore'
 import { stationStore } from '@/stores/stationStore'
 import { uid } from '@/utils/id'
+import { officialStations } from '@/utils/stationVersion'
 
 const caveState = useStore(caveStore)
 const segmentState = useStore(segmentStore)
@@ -44,8 +45,9 @@ function totalLength(caveId: string): number {
 
 function lastSurveyDate(caveId: string): string {
   const segmentIds = segmentsOf(caveId).map((item) => item.id)
-  const dates = stationState.stations
-    .filter((station) => segmentIds.includes(station.segmentId))
+  const dates = officialStations(
+    stationState.stations.filter((station) => segmentIds.includes(station.segmentId))
+  )
     .map((station) => station.date)
     .filter(Boolean)
   if (dates.length === 0) return '暂无测点'

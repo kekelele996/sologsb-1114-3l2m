@@ -6,17 +6,20 @@ import { caveStore } from '@/stores/caveStore'
 import { segmentStore } from '@/stores/segmentStore'
 import { stationStore } from '@/stores/stationStore'
 import { sketchStore } from '@/stores/sketchStore'
+import { notebookStore } from '@/stores/notebookStore'
 
 const route = useRoute()
 const caveState = useStore(caveStore)
 const segmentState = useStore(segmentStore)
 const stationState = useStore(stationStore)
 const sketchState = useStore(sketchStore)
+const notebookState = useStore(notebookStore)
 
 const menus = [
   { path: '/caves', label: '洞穴清单', icon: 'Files' },
   { path: '/segments', label: '洞段编目', icon: 'Guide' },
   { path: '/stations', label: '测点读数', icon: 'Aim' },
+  { path: '/notebooks', label: '外业手记', icon: 'Notebook' },
   { path: '/sketch', label: '草图工作台', icon: 'EditPen' },
   { path: '/merge', label: '图幅拼合', icon: 'Grid' }
 ]
@@ -27,7 +30,8 @@ const stats = computed(() => [
   { label: '洞穴', value: caveState.caves.filter((cave) => !cave.archived).length },
   { label: '洞段', value: segmentState.segments.length },
   { label: '测点', value: stationState.stations.length },
-  { label: '草图', value: sketchState.sketches.length }
+  { label: '草图', value: sketchState.sketches.length },
+  { label: '待重试手记', value: notebookState.batches.filter((batch) => batch.status === 'failed').length }
 ])
 
 onMounted(async () => {
@@ -35,6 +39,7 @@ onMounted(async () => {
   await segmentStore.getState().hydrate()
   await stationStore.getState().hydrate()
   await sketchStore.getState().hydrate()
+  await notebookStore.getState().hydrate()
 })
 </script>
 

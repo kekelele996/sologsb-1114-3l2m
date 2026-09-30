@@ -14,6 +14,10 @@ export interface Sketch {
   mergeOrder: number
   /** 桩号对齐锚点 */
   anchorStake: string
+  /** 最近一次自动拼合的横向偏移（像素） */
+  mergeOffset: number
+  /** 当前偏移是否来自桩号/邻边吸附 */
+  snapped: boolean
   /** 图片数据说明 */
   imageNote: string
 }

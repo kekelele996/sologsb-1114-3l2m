@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { Sketch } from '@/types'
 import ClosureBadge from '@/components/common/ClosureBadge.vue'
@@ -12,12 +12,12 @@ import { segmentStore } from '@/stores/segmentStore'
 import { stationStore } from '@/stores/stationStore'
 import { sketchStore } from '@/stores/sketchStore'
 import { downloadCsv } from '@/utils/export'
+import { MERGE_PX_PER_METER, officialStations } from '@/utils/stationVersion'
 import { stakeToNumber } from '@/utils/survey'
 
 const CANVAS_W = 780
 const CANVAS_H = 300
 const SNAP_PX = 12
-const PX_PER_METER = 1.6
 
 const caveState = useStore(caveStore)
 const segmentState = useStore(segmentStore)
@@ -28,10 +28,9 @@ const selectedCaveId = ref<string>(caveState.caves[0]?.id ?? '')
 const draggingId = ref<string | null>(null)
 const dragStartX = ref(0)
 const dragOriginOffset = ref(0)
+const dragOffset = ref(0)
+const dragSnapped = ref(false)
 const snapLog = ref<string[]>([])
-
-const offsets = reactive<Record<string, number>>({})
-const snapped = reactive<Record<string, boolean>>({})
 
 const caveSegments = computed(() =>
   segmentState.segments.filter((segment) => !selectedCaveId.value || segment.caveId === selectedCaveId.value)
@@ -67,27 +66,18 @@ watch(
   { immediate: true }
 )
 
-watch(
-  mergeSketches,
-  (list) => {
-    list.forEach((sketch) => {
-      if (offsets[sketch.id] === undefined) offsets[sketch.id] = 0
-      if (snapped[sketch.id] === undefined) snapped[sketch.id] = false
-    })
-  },
-  { immediate: true }
-)
-
 /** 洞段测点闭合差（拼合视图复用闭合差徽标） */
 const caveStations = computed(() =>
-  stationState.stations.filter((station) =>
-    caveSegments.value.some((segment) => segment.id === station.segmentId)
+  officialStations(
+    stationState.stations.filter((station) =>
+      caveSegments.value.some((segment) => segment.id === station.segmentId)
+    )
   )
 )
 const { result: closureResult } = useClosureCheck(caveStations)
 
 /** 按桩号锚点自动吸附：以最小锚点桩号为原点，按桩号差换算横向偏移 */
-function autoAlign(): void {
+async function autoAlign(): Promise<void> {
   const list = mergeSketches.value
   if (list.length === 0) {
     ElMessage.warning('当前洞穴暂无可拼合草图')
@@ -95,21 +85,33 @@ function autoAlign(): void {
   }
   const base = Math.min(...list.map((sketch) => stakeToNumber(sketch.anchorStake)))
   const logs: string[] = []
-  list.forEach((sketch) => {
+  const updates = list.map((sketch) => {
     const stake = stakeToNumber(sketch.anchorStake)
-    const target = Math.round((stake - base) * PX_PER_METER)
-    offsets[sketch.id] = target
-    snapped[sketch.id] = true
+    const target = Math.round((stake - base) * MERGE_PX_PER_METER)
     logs.push(`${sketch.code} 锚点 ${sketch.anchorStake} → 偏移 ${target}px`)
+    return { sketch, target }
   })
   snapLog.value = logs
+  for (const { sketch, target } of updates) {
+    await sketchStore.getState().setLayout(sketch.id, { mergeOffset: target, snapped: true })
+  }
   ElMessage.success(`已按桩号锚点吸附 ${list.length} 张图幅`)
+}
+
+function offsetOf(sketch: Sketch): number {
+  return draggingId.value === sketch.id ? dragOffset.value : sketch.mergeOffset
+}
+
+function snappedOf(sketch: Sketch): boolean {
+  return draggingId.value === sketch.id ? dragSnapped.value : sketch.snapped
 }
 
 function onMouseDown(sketch: Sketch, event: MouseEvent): void {
   draggingId.value = sketch.id
   dragStartX.value = event.clientX
-  dragOriginOffset.value = offsets[sketch.id] ?? 0
+  dragOriginOffset.value = sketch.mergeOffset
+  dragOffset.value = sketch.mergeOffset
+  dragSnapped.value = sketch.snapped
 }
 
 function onMouseMove(event: MouseEvent): void {
@@ -122,22 +124,26 @@ function onMouseMove(event: MouseEvent): void {
   let snapTarget: string | null = null
   const others = list.filter((sketch) => sketch.id !== draggingId.value)
   for (const other of others) {
-    const otherRight = (offsets[other.id] ?? 0) + widthOf(other)
+    const otherRight = offsetOf(other) + widthOf(other)
     if (Math.abs(value - otherRight) <= SNAP_PX) {
       value = otherRight
       snapTarget = other.code
       break
     }
   }
-  offsets[draggingId.value] = value
-  snapped[draggingId.value] = snapTarget !== null
+  dragOffset.value = value
+  dragSnapped.value = snapTarget !== null
   if (snapTarget) {
     const current = list[index]
-    snapLog.value = [`${current.code} 吸附到 ${snapTarget} 右边缘（偏移 ${value}px）`]
+    if (current) snapLog.value = [`${current.code} 吸附到 ${snapTarget} 右边缘（偏移 ${value}px）`]
   }
 }
 
-function onMouseUp(): void {
+async function onMouseUp(): Promise<void> {
+  const id = draggingId.value
+  if (id) {
+    await sketchStore.getState().setLayout(id, { mergeOffset: dragOffset.value, snapped: dragSnapped.value })
+  }
   draggingId.value = null
 }
 
@@ -157,8 +163,8 @@ const mergeRows = computed<MergeRow[]>(() =>
     code: sketch.code,
     segment: segmentOf(sketch),
     anchorStake: sketch.anchorStake,
-    offset: offsets[sketch.id] ?? 0,
-    snapped: snapped[sketch.id] ?? false
+    offset: sketch.mergeOffset,
+    snapped: sketch.snapped
   }))
 )
 
@@ -238,28 +244,28 @@ function exportMergeTable(): void {
           @mousedown.prevent="onMouseDown(sketch, $event)"
         >
           <rect
-            :x="offsets[sketch.id] ?? 0"
+            :x="offsetOf(sketch)"
             :y="40 + (index % 2) * 10"
             :width="widthOf(sketch)"
             height="96"
             rx="6"
-            :fill="snapped[sketch.id] ? 'rgba(47,111,143,0.22)' : 'rgba(143,211,199,0.28)'"
-            :stroke="snapped[sketch.id] ? '#2f6f8f' : '#1f8a70'"
+            :fill="snappedOf(sketch) ? 'rgba(47,111,143,0.22)' : 'rgba(143,211,199,0.28)'"
+            :stroke="snappedOf(sketch) ? '#2f6f8f' : '#1f8a70'"
             stroke-width="1.6"
           />
-          <text :x="(offsets[sketch.id] ?? 0) + 8" :y="62 + (index % 2) * 10" font-size="12" fill="#1f3a4d">
+          <text :x="offsetOf(sketch) + 8" :y="62 + (index % 2) * 10" font-size="12" fill="#1f3a4d">
             {{ sketch.code }}
           </text>
-          <text :x="(offsets[sketch.id] ?? 0) + 8" :y="80 + (index % 2) * 10" font-size="11" fill="#4a5b6b">
+          <text :x="offsetOf(sketch) + 8" :y="80 + (index % 2) * 10" font-size="11" fill="#4a5b6b">
             锚点 {{ sketch.anchorStake }}
           </text>
-          <text :x="(offsets[sketch.id] ?? 0) + 8" :y="96 + (index % 2) * 10" font-size="11" fill="#7a8896">
+          <text :x="offsetOf(sketch) + 8" :y="96 + (index % 2) * 10" font-size="11" fill="#7a8896">
             1:{{ sketch.scale }} · {{ sketch.gridCount }} 格
           </text>
           <line
-            :x1="offsets[sketch.id] ?? 0"
+            :x1="offsetOf(sketch)"
             :y1="136 + (index % 2) * 10"
-            :x2="(offsets[sketch.id] ?? 0) + 14"
+            :x2="offsetOf(sketch) + 14"
             :y2="136 + (index % 2) * 10"
             stroke="#c98a1b"
             stroke-width="2"

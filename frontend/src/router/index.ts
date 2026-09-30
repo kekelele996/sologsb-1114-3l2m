@@ -21,6 +21,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '测点读数' }
   },
   {
+    path: '/notebooks',
+    name: 'notebooks',
+    component: () => import('@/pages/NotebookPage.vue'),
+    meta: { title: '外业手记合并' }
+  },
+  {
     path: '/sketch',
     name: 'sketch',
     component: () => import('@/pages/SketchPage.vue'),

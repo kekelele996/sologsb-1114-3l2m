@@ -1,6 +1,7 @@
 import { createStore } from 'zustand/vanilla'
 import type { Sketch } from '@/types'
 import { db, syncAll, syncDelete, syncPut } from '@/hooks/usePersistentStore'
+import { recalculateSketchOffsets } from '@/utils/stationVersion'
 
 export interface SketchState {
   sketches: Sketch[]
@@ -9,6 +10,7 @@ export interface SketchState {
   save: (sketch: Sketch) => Promise<void>
   remove: (id: string) => Promise<void>
   reorder: (orderedIds: string[]) => Promise<void>
+  setLayout: (id: string, layout: Pick<Sketch, 'mergeOffset' | 'snapped'>) => Promise<void>
 }
 
 export const sketchStore = createStore<SketchState>((set, get) => ({
@@ -20,7 +22,12 @@ export const sketchStore = createStore<SketchState>((set, get) => ({
     set({ sketches, loaded: true })
   },
   save: async (sketch) => {
-    await syncPut<Sketch>(db.sketches, sketch)
+    const current = get().sketches
+    const segments = await db.segments.toArray()
+    const next = recalculateSketchOffsets(segments, [...current.filter((item) => item.id !== sketch.id), sketch], [
+      sketch.segmentId
+    ])
+    await db.sketches.bulkPut(next)
     await get().hydrate()
   },
   remove: async (id) => {
@@ -29,12 +36,21 @@ export const sketchStore = createStore<SketchState>((set, get) => ({
   },
   reorder: async (orderedIds) => {
     const all = get().sketches
-    await Promise.all(
-      orderedIds.map((id, index) => {
+    const reordered = orderedIds
+      .map((id, index) => {
         const target = all.find((item) => item.id === id)
-        return target ? syncPut<Sketch>(db.sketches, { ...target, mergeOrder: index + 1 }) : Promise.resolve()
+        return target ? { ...target, mergeOrder: index + 1 } : null
       })
-    )
+      .filter((item): item is Sketch => Boolean(item))
+
+    // 调序只保存新顺序，保留当前已持久化的锚点与拼合偏移。
+    await db.sketches.bulkPut(reordered)
+    await get().hydrate()
+  },
+  setLayout: async (id, layout) => {
+    const target = get().sketches.find((item) => item.id === id)
+    if (!target) return
+    await syncPut<Sketch>(db.sketches, { ...target, ...layout })
     await get().hydrate()
   }
 }))
